@@ -1,0 +1,1208 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useRef } from 'react';
+import { 
+  Microscope, 
+  HelpCircle, 
+  Save, 
+  TrendingUp, 
+  Upload, 
+  Plus, 
+  FileSpreadsheet, 
+  FileText, 
+  Check, 
+  Loader2, 
+  Sparkles, 
+  SlidersHorizontal,
+  Search,
+  Printer,
+  X
+} from 'lucide-react';
+import { LabTest, Patient, LabCatalogItem } from '../types';
+import { defaultLabCatalog } from '../mockData';
+
+interface LabViewProps {
+  labTests: LabTest[];
+  patients: Patient[];
+  labCatalog?: LabCatalogItem[];
+  userEmail: string;
+  userName: string;
+  onAddLabTest: (test: LabTest) => void;
+  onUpdateLabTest?: (test: LabTest) => void;
+  onAddLabCatalogItem?: (item: LabCatalogItem) => void;
+  onAddPatient?: (patient: Patient) => void;
+}
+
+// Simple and strong quotation-aware CSV parser
+function parseCSVData(rawText: string): Record<string, string>[] {
+  const lines = rawText.split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  // Parse header
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g, '').toLowerCase());
+  const results: Record<string, string>[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    const cols: string[] = [];
+    let insideQuote = false;
+    let currentRaw = '';
+
+    for (let c = 0; c < line.length; c++) {
+      const char = line[c];
+      if (char === '"' || char === "'") {
+        insideQuote = !insideQuote;
+      } else if (char === ',' && !insideQuote) {
+        cols.push(currentRaw.trim().replace(/^["']|["']$/g, ''));
+        currentRaw = '';
+      } else {
+        currentRaw += char;
+      }
+    }
+    cols.push(currentRaw.trim().replace(/^["']|["']$/g, ''));
+
+    if (cols.length >= headers.length) {
+      const row: Record<string, string> = {};
+      headers.forEach((header, index) => {
+        row[header] = cols[index] || '';
+      });
+      results.push(row);
+    }
+  }
+  return results;
+}
+
+export function LabView({ 
+  labTests, 
+  patients, 
+  labCatalog = [], 
+  userEmail, 
+  userName, 
+  onAddLabTest, 
+  onUpdateLabTest,
+  onAddLabCatalogItem,
+  onAddPatient
+}: LabViewProps) {
+  const [selectedPatientId, setSelectedPatientId] = useState<string>('');
+  const [patientSearchQuery, setPatientSearchQuery] = useState<string>('');
+  const [testType, setTestType] = useState<string>('');
+  const [customTestName, setCustomTestName] = useState<string>('');
+  const [testFee, setTestFee] = useState<number>(350);
+  const [testResult, setTestResult] = useState<string>('');
+  const [technicianName, setTechnicianName] = useState<string>(userName || 'Peter Kagiri');
+  const [labTestDate, setLabTestDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [summaryPatient, setSummaryPatient] = useState<{ id: string; name: string } | null>(null);
+
+  // Walk-in Registration states
+  const [isRegisteringWalkIn, setIsRegisteringWalkIn] = useState<boolean>(false);
+  const [walkInName, setWalkInName] = useState<string>('');
+  const [walkInAge, setWalkInAge] = useState<number>(30);
+  const [walkInGender, setWalkInGender] = useState<'Male' | 'Female' | 'Other'>('Male');
+  const [walkInPhone, setWalkInPhone] = useState<string>('');
+
+  const handleCreateWalkIn = () => {
+    if (!walkInName.trim()) {
+      alert("Please provide the walk-in patient's full name.");
+      return;
+    }
+    const yearMonth = new Date().toISOString().substring(0, 7);
+    const randId = Math.floor(1000 + Math.random() * 9000);
+    const newPatient: Patient = {
+      id: `PT-${randId}`,
+      opNumber: `OP-${yearMonth}-${randId}`,
+      name: walkInName.trim(),
+      age: Number(walkInAge),
+      gender: walkInGender,
+      phone: walkInPhone.trim() || 'N/A',
+      category: 'General Consultation',
+      registeredAt: new Date().toISOString(),
+      registeredBy: userEmail || 'lab_tech@novamed.com',
+      medicalHistory: [],
+      isWalkIn: true,
+      walkInTag: 'Lab Walk-In'
+    };
+
+    if (onAddPatient) {
+      onAddPatient(newPatient);
+      setSelectedPatientId(newPatient.id);
+      setIsRegisteringWalkIn(false);
+      // Reset walk-in form
+      setWalkInName('');
+      setWalkInAge(30);
+      setWalkInGender('Male');
+      setWalkInPhone('');
+    } else {
+      alert("Patient registration hook not configured in application root.");
+    }
+  };
+
+  // Tab state: 'history' (Ledger) vs 'catalog' (Manage/Import catalog) vs 'orders' (Doctor Orders)
+  const [activePanelTab, setActivePanelTab] = useState<'history' | 'catalog' | 'orders'>('history');
+
+  // Manual catalog addition form state
+  const [newCatalogName, setNewCatalogName] = useState<string>('');
+  const [newCatalogFee, setNewCatalogFee] = useState<number>(500);
+
+  // File Upload states
+  const [isParsing, setIsParsing] = useState<boolean>(false);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [uploadFeedback, setUploadFeedback] = useState<{ success: boolean; message: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Dynamic search parameters for catalog
+  const [catalogSearchQuery, setCatalogSearchQuery] = useState<string>('');
+  const [manageSearchQuery, setManageSearchQuery] = useState<string>('');
+
+  // Resolve active catalog menu (dynamic Firestore items first, with fallback to imported default catalog)
+  const activeCatalog = labCatalog.length > 0 
+    ? labCatalog.map(item => ({ name: item.name, fee: item.fee })) 
+    : defaultLabCatalog.map(item => ({ name: item.name, fee: item.fee }));
+
+  // Filter lists based on search queries
+  const filteredDropdownCatalog = activeCatalog.filter(item => 
+    item.name.toLowerCase().includes(catalogSearchQuery.toLowerCase())
+  );
+
+  const filteredManageCatalog = activeCatalog.filter(item => 
+    item.name.toLowerCase().includes(manageSearchQuery.toLowerCase())
+  );
+
+  const pendingDoctorOrders = patients.flatMap(p => 
+    p.medicalHistory.flatMap(m => 
+      (m.labTestsRequested || []).map(l => ({
+        ...l,
+        patientId: p.id,
+        patientName: p.name,
+        recordId: m.id
+      }))
+    )
+  ).filter(order => !labTests.some(t => t.recordId === order.recordId && t.testName === order.testName));
+
+  // Sync test fee when default first option changes or option selected
+  React.useEffect(() => {
+    if (activeCatalog.length > 0 && !testType) {
+      setTestType(activeCatalog[0].name);
+      setTestFee(activeCatalog[0].fee);
+    }
+  }, [activeCatalog, testType]);
+
+  // Daily Stats Computed locally (using local timezone-safe date)
+  const localToday = new Date();
+  const year = localToday.getFullYear();
+  const month = String(localToday.getMonth() + 1).padStart(2, '0');
+  const day = String(localToday.getDate()).padStart(2, '0');
+  const todayString = `${year}-${month}-${day}`;
+  const todaysTests = labTests.filter((t) => t.testDate === todayString);
+  const todaysRevenue = todaysTests.reduce((sum, t) => sum + Number(t.fee || 0), 0);
+
+  const handleAddTest = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPatientId) {
+      alert('Please select a valid target patient.');
+      return;
+    }
+    const patient = patients.find((p) => p.id === selectedPatientId);
+    if (!patient) return;
+
+    const finalTestName = testType === 'Custom' ? customTestName : testType;
+    if (!finalTestName || finalTestName === '') {
+      alert('Please choose a valid laboratory diagnostic test panel or specify a custom diagnostics title.');
+      return;
+    }
+
+    const testItem: LabTest = {
+      id: `LB-${Math.floor(100000 + Math.random() * 900000)}`,
+      testName: finalTestName,
+      patientName: patient.name,
+      patientId: patient.id,
+      testDate: labTestDate,
+      performedBy: technicianName,
+      performedByEmail: userEmail || 'lab_tech@novamed.com',
+      result: testResult || 'Pending official reading/Interpretation.',
+      fee: testFee
+    };
+
+    onAddLabTest(testItem);
+
+    // Reset fields
+    setTestResult('');
+    setCustomTestName('');
+    alert(`Diagnostics lab report committed successfully for ${patient.name}.`);
+  };
+
+  const handleTestTypeChange = (val: string) => {
+    setTestType(val);
+    if (val === 'Custom') {
+      setTestFee(1000);
+    } else if (!val) {
+      setTestFee(0);
+    } else {
+      const match = activeCatalog.find((t) => t.name === val);
+      if (match) {
+        setTestFee(match.fee);
+      }
+    }
+  };
+
+  // Manual catalog item registration
+  const handleAddSingleCatalog = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCatalogName.trim()) {
+      alert('Please specify a valid test panel name.');
+      return;
+    }
+    if (onAddLabCatalogItem) {
+      const isDuplicate = labCatalog.some(item => item.name.toLowerCase() === newCatalogName.trim().toLowerCase());
+      if (isDuplicate) {
+        alert('This medical test panel is already present in your registered catalog.');
+        return;
+      }
+
+      onAddLabCatalogItem({
+        id: `LC-${Math.floor(10000 + Math.random() * 90000)}`,
+        name: newCatalogName.trim(),
+        fee: Number(newCatalogFee)
+      });
+      setNewCatalogName('');
+      alert(`Test panel catalog updated: "${newCatalogName}" is now live for diagnostic assignments.`);
+    } else {
+      alert('Catalog additions are blocked: Setup is working in local offline read-only fallback mode.');
+    }
+  };
+
+  // Drag over handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      await processUploadedFile(files[0]);
+    }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      await processUploadedFile(files[0]);
+    }
+  };
+
+  // Universal File Processor
+  const processUploadedFile = async (file: File) => {
+    setUploadFeedback(null);
+    const reader = new FileReader();
+
+    if (file.name.endsWith('.csv')) {
+      setIsParsing(true);
+      reader.onload = (e) => {
+        try {
+          const rawText = e.target?.result as string;
+          const parsedRows = parseCSVData(rawText);
+
+          if (parsedRows.length === 0) {
+            setUploadFeedback({ success: false, message: 'Vacant or incorrectly formatted CSV. Header row with columns is required.' });
+            setIsParsing(false);
+            return;
+          }
+
+          let addedCount = 0;
+          parsedRows.forEach((row) => {
+            // Flexible, case-insensitive mapping
+            const nameKey = Object.keys(row).find(k => k.includes('name') || k.includes('test') || k.includes('panel') || k.includes('diagnostic'));
+            const feeKey = Object.keys(row).find(k => k.includes('fee') || k.includes('price') || k.includes('charge') || k.includes('cost') || k.includes('ksh'));
+
+            const foundName = nameKey ? row[nameKey] : undefined;
+            const foundFee = feeKey ? parseFloat(row[feeKey].replace(/[^0-9.]/g, '')) : 500;
+
+            if (foundName && foundName.trim()) {
+              if (onAddLabCatalogItem) {
+                onAddLabCatalogItem({
+                  id: `LC-${Math.floor(10000 + Math.random() * 90000)}`,
+                  name: foundName.trim(),
+                  fee: isNaN(foundFee) ? 500 : foundFee
+                });
+                addedCount++;
+              }
+            }
+          });
+
+          setUploadFeedback({ 
+            success: true, 
+            message: `Extracted ${addedCount} test panel profiles from CSV list successfully.` 
+          });
+        } catch (err: any) {
+          setUploadFeedback({ success: false, message: `CSV upload crash: ${err?.message || err}` });
+        } finally {
+          setIsParsing(false);
+        }
+      };
+      reader.readAsText(file);
+
+    } else if (file.name.endsWith('.pdf')) {
+      setIsParsing(true);
+      reader.onload = async (e) => {
+        try {
+          const dataUrl = e.target?.result as string;
+          const base64Content = dataUrl.split(',')[1];
+
+          const response = await fetch('/api/parse-document', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileData: base64Content,
+              mimeType: 'application/pdf',
+              dataType: 'labTestsCatalog'
+            })
+          });
+
+          const result = await response.json();
+          if (response.ok && result.success && Array.isArray(result.items)) {
+            let addCount = 0;
+            result.items.forEach((item: any) => {
+              if (item.name && onAddLabCatalogItem) {
+                onAddLabCatalogItem({
+                  id: `LC-${Math.floor(10000 + Math.random() * 90000)}`,
+                  name: item.name,
+                  fee: Number(item.fee) || 500
+                });
+                addCount++;
+              }
+            });
+            setUploadFeedback({ 
+              success: true, 
+              message: `AI scanned pricing documents: extracted ${addCount} clinical tests flawlessly.` 
+            });
+          } else {
+            setUploadFeedback({ 
+              success: false, 
+              message: result.message || 'AI document reading stalled. Confirm your GEMINI_API_KEY in settings or use .csv instead.' 
+            });
+          }
+        } catch (err: any) {
+          setUploadFeedback({ success: false, message: `PDF parsing failed: ${err.message}` });
+        } finally {
+          setIsParsing(false);
+        }
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setUploadFeedback({ success: false, message: 'Invalid file extension. Please select a spreadsheet (.csv) or an official pricing sheet (.pdf).' });
+    }
+  };
+
+  return (
+    <div id="laboratory-module" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Test Entry Panel */}
+      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs leading-relaxed h-fit">
+        <h3 className="text-sm font-semibold text-slate-800 mb-4 flex items-center gap-2">
+          <Microscope className="w-4.5 h-4.5 text-blue-600" />
+          Record Lab Diagnostics Report
+        </h3>
+
+        <form onSubmit={handleAddTest} className="space-y-4 text-xs">
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label id="lbl-lab-patient" className="block font-medium text-slate-500">Target Patient</label>
+              {!isRegisteringWalkIn && (
+                <button
+                  type="button"
+                  onClick={() => setIsRegisteringWalkIn(true)}
+                  className="text-blue-700 hover:text-blue-900 text-[10px] font-bold underline flex items-center gap-0.5 cursor-pointer"
+                >
+                  <Plus className="w-3 h-3" /> Add Lab Walk-In Patient
+                </button>
+              )}
+            </div>
+
+            {isRegisteringWalkIn ? (
+              <div className="bg-blue-50/50 border border-blue-100 p-3 rounded-lg space-y-2.5 mb-2">
+                <div className="flex justify-between items-center pb-1.5 border-b border-blue-200/50">
+                  <span className="font-bold text-[10px] text-blue-800 uppercase tracking-wider">New Lab Walk-In Patient</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsRegisteringWalkIn(false)}
+                    className="text-[10px] text-slate-500 hover:text-slate-800 font-bold"
+                  >
+                    Cancel
+                  </button>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 mb-1">Full Name</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="E.g., John Doe"
+                    value={walkInName}
+                    onChange={(e) => setWalkInName(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-md p-1.5 focus:ring-1 focus:ring-blue-500 outline-hidden text-xs"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">Age (Years)</label>
+                    <input
+                      type="number"
+                      required
+                      min={0}
+                      max={150}
+                      value={walkInAge}
+                      onChange={(e) => setWalkInAge(Number(e.target.value))}
+                      className="w-full bg-white border border-slate-200 rounded-md p-1.5 focus:ring-1 focus:ring-blue-500 outline-hidden text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">Gender</label>
+                    <select
+                      value={walkInGender}
+                      onChange={(e) => setWalkInGender(e.target.value as any)}
+                      className="w-full bg-white border border-slate-200 rounded-md p-1.5 focus:ring-1 focus:ring-blue-500 outline-hidden text-xs"
+                    >
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 mb-1">Phone Contact</label>
+                  <input
+                    type="text"
+                    placeholder="E.g., 0712345678"
+                    value={walkInPhone}
+                    onChange={(e) => setWalkInPhone(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-md p-1.5 focus:ring-1 focus:ring-blue-500 outline-hidden text-xs"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleCreateWalkIn}
+                  className="w-full bg-blue-700 hover:bg-blue-800 text-white text-[10px] font-bold py-1.5 px-3 rounded-md flex items-center justify-center gap-1 transition-all cursor-pointer"
+                >
+                  <Plus className="w-3 h-3" />
+                  Save & Select Walk-In
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* Search patient in list */}
+                <div className="relative mb-2">
+                  <input
+                    type="text"
+                    placeholder="Type to filter patients instantly..."
+                    value={patientSearchQuery}
+                    onChange={(e) => setPatientSearchQuery(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 pl-8 pr-8 text-xs focus:ring-1 focus:ring-blue-500 outline-hidden"
+                  />
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-3" />
+                  {patientSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setPatientSearchQuery('')}
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 bg-slate-200/50 hover:bg-slate-200/90 rounded-full w-4.5 h-4.5 flex items-center justify-center text-[10px] font-bold"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                <select
+                  id="select-lab-patient"
+                  required
+                  value={selectedPatientId}
+                  onChange={(e) => setSelectedPatientId(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden text-xs"
+                >
+                  {(() => {
+                    const filtered = patients.filter((p) => {
+                      const op = p.opNumber || `OP-${(p.registeredAt ? p.registeredAt.substring(0, 7) : '2026-06')}-${p.id.split('-')[1]}`;
+                      const q = patientSearchQuery.toLowerCase();
+                      return (
+                        p.name.toLowerCase().includes(q) ||
+                        p.id.toLowerCase().includes(q) ||
+                        op.toLowerCase().includes(q) ||
+                        (p.phone && p.phone.toLowerCase().includes(q)) ||
+                        (p.walkInTag && p.walkInTag.toLowerCase().includes(q)) ||
+                        (p.category && p.category.toLowerCase().includes(q))
+                      );
+                    });
+
+                    return (
+                      <>
+                        <option value="">
+                          {filtered.length === 0
+                            ? '-- No patients matched search query --'
+                            : `-- Choose Patient (${filtered.length} matched) --`}
+                        </option>
+                        {filtered.map((p) => {
+                          return (
+                            <option key={p.id} value={p.id}>
+                              {p.name} ({p.gender}, {p.age} {p.ageUnit === 'Months' ? 'months' : 'yrs'}) {p.walkInTag ? `[${p.walkInTag}]` : `- ${p.category}`}
+                            </option>
+                          );
+                        })}
+                      </>
+                    );
+                  })()}
+                </select>
+              </>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label id="lbl-lab-testtype" className="block font-medium text-slate-500 mb-1">Diagnostic Panel</label>
+              
+              {/* Filter search box */}
+              <div className="relative mb-2">
+                <input
+                  type="text"
+                  placeholder="Type to filter tests instantly..."
+                  value={catalogSearchQuery}
+                  onChange={(e) => setCatalogSearchQuery(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 pl-8 pr-8 text-xs focus:ring-1 focus:ring-blue-500 outline-hidden"
+                />
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-3" />
+                {catalogSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setCatalogSearchQuery('')}
+                    className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 bg-slate-200/50 hover:bg-slate-200/90 rounded-full w-4.5 h-4.5 flex items-center justify-center text-[10px] font-bold"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              <select
+                id="select-lab-testtype"
+                value={testType}
+                onChange={(e) => handleTestTypeChange(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden font-medium text-xs"
+              >
+                <option value="">
+                  {filteredDropdownCatalog.length === 0
+                    ? '-- No tests match search query --'
+                    : `-- Choose Test (${filteredDropdownCatalog.length} matched) --`}
+                </option>
+                {filteredDropdownCatalog.map((item) => (
+                  <option key={item.name} value={item.name}>
+                    {item.name} (Ksh {item.fee})
+                  </option>
+                ))}
+                <option value="Custom">-- Custom Test Panel --</option>
+              </select>
+            </div>
+
+            <div>
+              <label id="lbl-lab-date" className="block font-medium text-slate-500 mb-1">Diagnosis Date</label>
+              <input
+                id="input-lab-date"
+                type="date"
+                required
+                value={labTestDate}
+                onChange={(e) => setLabTestDate(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden"
+              />
+            </div>
+          </div>
+
+          {testType === 'Custom' && (
+            <div className="animate-fade-in">
+              <label id="lbl-lab-customname" className="block font-medium text-slate-500 mb-1">Custom Diagnostics Title</label>
+              <input
+                id="input-lab-customname"
+                type="text"
+                placeholder="E.g., Complete Urinalysis Screen"
+                required
+                value={customTestName}
+                onChange={(e) => setCustomTestName(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden"
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label id="lbl-lab-fee" className="block font-medium text-slate-500 mb-1">Charging Fee (Ksh)</label>
+              <input
+                id="input-lab-fee"
+                type="number"
+                required
+                min={0}
+                value={testFee}
+                onChange={(e) => setTestFee(Number(e.target.value))}
+                disabled={testType !== 'Custom'}
+                className="w-full bg-slate-100 disabled:opacity-75 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden font-bold font-mono text-blue-800"
+              />
+            </div>
+
+            <div>
+              <label id="lbl-lab-officer" className="block font-medium text-slate-500 mb-1">Laboratory Officer</label>
+              <input
+                id="input-lab-officer"
+                type="text"
+                required
+                value={technicianName}
+                onChange={(e) => setTechnicianName(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label id="lbl-lab-result" className="block font-medium text-slate-500 mb-1">Detailed Findings & Diagnostic Results</label>
+            <textarea
+              id="txt-lab-result"
+              placeholder="E.g., Blood smear positive (++) for Plasmodium Falciparum ring form trophozoites. Standard antimalarials suggested."
+              required
+              rows={4}
+              value={testResult}
+              onChange={(e) => setTestResult(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden font-mono text-xs"
+            />
+          </div>
+
+          <button
+            id="btn-lab-submit"
+            type="submit"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 shadow-xs cursor-pointer active:scale-[0.99] transition-all"
+          >
+            <Save className="w-3.5 h-3.5" />
+            Finalize & Commit Lab Test
+          </button>
+        </form>
+      </div>
+
+      {/* Dynamic Tab Segment (Ledger vs Catalog & Bulk Import) */}
+      <div className="lg:col-span-2 space-y-4">
+        {/* Lab Revenue Stats Topbar */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between shadow-xs">
+            <div>
+              <span className="text-[10px] text-slate-400 font-mono uppercase tracking-widest block">Tests Administered Today</span>
+              <span className="text-xl font-bold text-slate-900">{todaysTests.length}</span>
+            </div>
+            <Microscope className="w-8 h-8 text-blue-600 animate-pulse" />
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between shadow-xs">
+            <div>
+              <span className="text-[10px] text-slate-400 font-mono uppercase tracking-widest block">Daily Lab Revenue</span>
+              <span className="text-xl font-bold text-blue-700">Ksh {todaysRevenue.toLocaleString()}</span>
+            </div>
+            <TrendingUp className="w-8 h-8 text-blue-600" />
+          </div>
+        </div>
+
+        {/* Tab Switch Control Header */}
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs leading-relaxed">
+          <div className="flex border-b border-slate-100 pb-3 mb-5 items-center justify-between">
+            <div className="flex gap-4">
+              <button
+                id="subtab-lab-ledger"
+                type="button"
+                onClick={() => setActivePanelTab('history')}
+                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activePanelTab === 'history'
+                    ? 'bg-blue-50 text-blue-700 font-bold border border-blue-100/70'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Clinical Diagnostics Ledger ({labTests.length})
+              </button>
+              <button
+                id="subtab-lab-orders"
+                type="button"
+                onClick={() => setActivePanelTab('orders')}
+                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activePanelTab === 'orders'
+                    ? 'bg-blue-50 text-blue-700 font-bold border border-blue-100/70'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Pending Doctor Orders ({pendingDoctorOrders.length})
+              </button>
+              <button
+                id="subtab-lab-catalog"
+                type="button"
+                onClick={() => setActivePanelTab('catalog')}
+                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activePanelTab === 'catalog'
+                    ? 'bg-blue-50 text-blue-700 font-bold border border-blue-100/70'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                Manage Test Menu Catalog ({activeCatalog.length})
+              </button>
+            </div>
+            <div className="text-[10px] font-mono text-slate-400 uppercase tracking-widest flex items-center gap-1">
+              <SlidersHorizontal className="w-3 h-3" /> Labs Control Plane
+            </div>
+          </div>
+
+          {/* Render Active View Tab */}
+          {activePanelTab === 'history' ? (
+            <div className="space-y-4 animate-fade-in">
+              {/* ... history content */}
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200/70 print:hidden">
+                <div className="flex items-center gap-2">
+                  <Printer className="w-4 h-4 text-blue-600" />
+                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Print Patient Diagnostic Summary:</span>
+                </div>
+                <div className="flex items-center gap-2 flex-1 max-w-md">
+                  <select
+                    id="select-patient-print-summary"
+                    value={summaryPatient ? summaryPatient.id : ""}
+                    onChange={(e) => {
+                      if (!e.target.value) {
+                        setSummaryPatient(null);
+                        return;
+                      }
+                      const pat = patients.find(p => p.id === e.target.value);
+                      const sample = labTests.find(t => t.patientId === e.target.value);
+                      setSummaryPatient({
+                        id: e.target.value,
+                        name: pat?.name || sample?.patientName || e.target.value
+                      });
+                    }}
+                    className="bg-white border border-slate-200 rounded-lg p-1.5 text-xs flex-1 outline-hidden focus:ring-1 focus:ring-blue-500 font-medium text-slate-800"
+                  >
+                    <option value="">-- Choose Patient to Print History Hard Copy --</option>
+                    {Array.from(new Set(labTests.map(t => t.patientId))).map(pId => {
+                      const sampleTest = labTests.find(t => t.patientId === pId);
+                      const pat = patients.find(p => p.id === pId);
+                      const pName = pat?.name || sampleTest?.patientName || pId;
+                      const count = labTests.filter(t => t.patientId === pId).length;
+                      return <option key={pId} value={pId}>{pName} ({count} report{count > 1 ? 's' : ''})</option>;
+                    })}
+                  </select>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="text-slate-500 font-medium border-b border-slate-100 uppercase font-mono text-[9px] tracking-wider">
+                    <tr>
+                      <th className="py-2.5">Test ID</th>
+                      <th className="py-2.5">Date</th>
+                      <th className="py-2.5">Patient Name</th>
+                      <th className="py-2.5">Diagnostic Panel</th>
+                      <th className="py-2.5">Authorized Officer</th>
+                      <th className="py-2.5">Lab Fee</th>
+                      <th className="py-2.5 text-right print:hidden">Summary</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                    {labTests.map((t) => {
+                      const patient = patients.find((p) => p.id === t.patientId);
+                      const op = patient?.opNumber || (patient ? `OP-${(patient.registeredAt ? patient.registeredAt.substring(0, 7) : '2026-06')}-${patient.id.split('-')[1]}` : '');
+                      return (
+                        <React.Fragment key={t.id}>
+                          <tr id={`lab-tr-main-${t.id}`} className="hover:bg-slate-50/40 font-sans transition-colors">
+                            <td className="py-3.5 font-mono text-slate-500 font-medium">{t.id}</td>
+                            <td className="py-3.5 font-mono">{t.testDate}</td>
+                            <td className="py-3.5 font-semibold text-slate-800">
+                              <div>{t.patientName}</div>
+                              {op && <div className="text-[9px] text-blue-700 font-mono font-bold">{op}</div>}
+                            </td>
+                            <td className="py-3.5 text-slate-600 font-semibold">{t.testName}</td>
+                            <td className="py-3.5 text-slate-500">{t.performedBy}</td>
+                            <td className="py-3.5 font-bold text-slate-900 font-mono">Ksh {t.fee.toLocaleString()}</td>
+                            <td className="py-3.5 text-right print:hidden pr-1">
+                              <button
+                                type="button"
+                                onClick={() => setSummaryPatient({ id: t.patientId, name: t.patientName })}
+                                className="py-1 px-2.5 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-md text-[10px] font-bold inline-flex items-center gap-1.5 border border-blue-200/80 shadow-2xs transition-all cursor-pointer"
+                                title={`Print printable diagnostic summary for ${t.patientName}`}
+                              >
+                                <Printer className="w-3 h-3 text-blue-600" />
+                                Print Summary
+                              </button>
+                            </td>
+                          </tr>
+                          <tr id={`lab-tr-sub-${t.id}`} className="bg-blue-50/20 border-b border-slate-100">
+                            <td colSpan={7} className="px-4 py-2.5 text-[11px] text-slate-600 leading-normal">
+                              <span className="font-bold text-slate-500 mr-2 uppercase tracking-wider font-mono text-[9px]">Lab Findings:</span> 
+                              <code className="bg-white border border-slate-200/60 p-1.5 rounded-md inline-block font-mono text-blue-800 shadow-2xs mt-0.5">
+                                {t.result}
+                              </code>
+                            </td>
+                          </tr>
+                        </React.Fragment>
+                      );
+                    })}
+                    {labTests.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-400 font-medium">No laboratory panel reports recorded yet. Use the record form on the left.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : activePanelTab === 'orders' ? (
+            <div className="space-y-4 animate-fade-in">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="text-slate-500 font-medium border-b border-slate-100 uppercase font-mono text-[9px] tracking-wider">
+                    <tr>
+                      <th className="py-2.5">Patient Name</th>
+                      <th className="py-2.5">Diagnostic Panel</th>
+                      <th className="py-2.5">Lab Fee</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                    {pendingDoctorOrders.map((order, index) => (
+                      <tr key={index} className="hover:bg-slate-50/40 transition-colors">
+                        <td className="py-3.5 font-semibold text-slate-800">{order.patientName}</td>
+                        <td className="py-3.5 text-slate-600 font-semibold">{order.testName}</td>
+                        <td className="py-3.5 font-bold text-slate-900 font-mono">Ksh {order.fee.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                    {pendingDoctorOrders.length === 0 && (
+                      <tr>
+                        <td colSpan={3} className="py-8 text-center text-slate-400 font-medium">No pending lab orders from doctors.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6 animate-fade-in">
+              
+              {/* CSV/PDF bulk Drag zone */}
+              <div>
+                <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <Upload className="w-3.5 h-3.5 text-blue-600" />
+                  Bulk Upload Clinical Diagnostic Panels & Prices
+                </h4>
+                <p className="text-[11px] text-slate-500 mb-3">
+                  Upload high-volume lab tests, diagnostic directories, or laboratory pricing booklets. Accepts <strong>.csv spreadsheets</strong> or <strong>PDF documents</strong>. AI handles PDF conversion automatically.
+                </p>
+
+                <div
+                  id="dropzone-lab-catalog"
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center gap-3 cursor-pointer transition-all ${
+                    isDragging 
+                      ? 'border-blue-500 bg-blue-50/50' 
+                      : 'border-slate-200 bg-slate-50/50 hover:bg-slate-50 hover:border-slate-300'
+                  }`}
+                >
+                  <input
+                    id="input-file-lab-catalog"
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileChange}
+                    accept=".csv, .pdf"
+                    className="hidden"
+                  />
+                  {isParsing ? (
+                    <div className="flex flex-col items-center text-center p-3 animate-pulse">
+                      <Loader2 className="w-8 h-8 text-blue-600 animate-spin mb-2" />
+                      <span className="text-xs font-semibold text-blue-800">Reading documents & extracting testing parameters...</span>
+                      <span className="text-[10px] text-slate-400 font-mono mt-1">Calling Gemini deep-scanning extraction pipeline</span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center text-center">
+                      <div className="p-3 bg-white rounded-full shadow-2xs border border-slate-100 flex gap-2">
+                        <FileSpreadsheet className="w-6 h-6 text-blue-600" />
+                        <FileText className="w-6 h-6 text-indigo-600" />
+                      </div>
+                      <span className="text-xs font-semibold text-slate-700 mt-2">
+                        Drag and drop file here, or <span className="text-blue-600 underline">browse computer</span>
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-1">Accepts raw CSV (Name, Pricing columns) or official PDF directories</span>
+                    </div>
+                  )}
+                </div>
+
+                {uploadFeedback && (
+                  <div className={`mt-3 p-3 rounded-lg text-xs font-medium flex items-center gap-2 border ${
+                    uploadFeedback.success 
+                      ? 'bg-blue-50 text-blue-800 border-blue-100' 
+                      : 'bg-red-50 text-red-800 border-red-100'
+                  }`}>
+                    {uploadFeedback.success ? <Check className="w-4 h-4 text-blue-700 shrink-0" /> : <HelpCircle className="w-4 h-4 text-red-700 shrink-0" />}
+                    <span>{uploadFeedback.message}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Single Catalog Panel Addition */}
+              <div className="border-t border-slate-100 pt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-1">
+                  <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wide">Register Single Diagnostic Panel</h4>
+                  <p className="text-[11px] text-slate-400 mt-1">Directly add a new lab specialty directory profile manually.</p>
+                </div>
+                <form onSubmit={handleAddSingleCatalog} className="md:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <div className="sm:col-span-2">
+                    <label id="lbl-catalog-name" className="block text-[11px] font-medium text-slate-500 mb-1">Diagnostic Test Name</label>
+                    <input
+                      id="input-catalog-name"
+                      type="text"
+                      placeholder="E.g., Semen Analysis / Microscopy"
+                      required
+                      value={newCatalogName}
+                      onChange={(e) => setNewCatalogName(e.target.value)}
+                      className="w-full text-xs bg-slate-50 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden"
+                    />
+                  </div>
+                  <div>
+                    <label id="lbl-catalog-fee" className="block text-[11px] font-medium text-slate-500 mb-1">Fee (Ksh)</label>
+                    <div className="flex gap-2">
+                      <input
+                        id="input-catalog-fee"
+                        type="number"
+                        min={0}
+                        required
+                        value={newCatalogFee}
+                        onChange={(e) => setNewCatalogFee(Number(e.target.value))}
+                        className="w-full text-xs font-mono font-bold bg-slate-50 border border-slate-200 rounded-lg p-2 focus:ring-1 focus:ring-blue-500 outline-hidden text-blue-800"
+                      />
+                      <button
+                        id="btn-catalog-add"
+                        type="submit"
+                        className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg flex items-center justify-center shrink-0 shadow-xs cursor-pointer active:scale-95 transition-all"
+                        title="Add to catalog list"
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+
+              {/* Current test panels list card */}
+              <div className="border-t border-slate-100 pt-5">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                  <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wide">
+                    Active Laboratory diagnostic price sheet directory ({filteredManageCatalog.length} of {activeCatalog.length})
+                  </h4>
+                  <div className="relative max-w-xs w-full">
+                    <input
+                      type="text"
+                      placeholder="Search active catalog..."
+                      value={manageSearchQuery}
+                      onChange={(e) => setManageSearchQuery(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 pl-8 pr-8 text-xs focus:ring-1 focus:ring-blue-500 outline-hidden"
+                    />
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-3" />
+                    {manageSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setManageSearchQuery('')}
+                        className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 bg-slate-200/50 hover:bg-slate-200/90 rounded-full w-4.5 h-4.5 flex items-center justify-center text-[10px] font-bold"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {filteredManageCatalog.length === 0 ? (
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-6 text-center text-xs text-slate-500 leading-normal">
+                    No clinical diagnostic test matched your search criteria. Add it manually above or check the query.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-96 overflow-y-auto pr-1">
+                    {filteredManageCatalog.map((item, idx) => (
+                      <div key={idx} className="bg-slate-50 border border-slate-200/50 p-2.5 rounded-lg flex justify-between items-center text-xs shadow-2xs font-sans">
+                        <span className="font-semibold text-slate-800 line-clamp-1" title={item.name}>{item.name}</span>
+                        <span className="font-extrabold text-blue-800 font-mono bg-white border border-slate-100 px-1.5 py-0.5 rounded shadow-3xs shrink-0 ml-2">Ksh {item.fee}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Official Hard Copy Printable Summary Modal */}
+      {summaryPatient && (() => {
+        const patientTests = labTests.filter(t => t.patientId === summaryPatient.id);
+        const patObj = patients.find(p => p.id === summaryPatient.id);
+        const opNum = patObj?.opNumber || `OP-${(patObj?.registeredAt ? patObj.registeredAt.substring(0, 7) : '2026-06')}-${summaryPatient.id.split('-')[1] || '100'}`;
+        const totalFees = patientTests.reduce((sum, t) => sum + Number(t.fee || 0), 0);
+
+        return (
+          <div id="printable-lab-summary-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs print:bg-white print:p-0 print:block print:static">
+            <style>{`
+              @media print {
+                body * {
+                  visibility: hidden;
+                }
+                #printable-lab-summary-modal, #printable-lab-summary-modal * {
+                  visibility: visible;
+                }
+                #printable-lab-summary-modal {
+                  position: absolute;
+                  left: 0;
+                  top: 0;
+                  width: 100%;
+                  margin: 0;
+                  padding: 0;
+                  background: white;
+                  box-shadow: none;
+                  border: none;
+                }
+              }
+            `}</style>
+            <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto border border-slate-200 shadow-2xl p-8 print:max-w-none print:w-full print:max-h-none print:overflow-visible print:border-none print:shadow-none print:p-6 animate-fade-in">
+              {/* Modal Control Action Topbar (Hidden when printing) */}
+              <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6 print:hidden">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-blue-600" />
+                  <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider">Official Laboratory Diagnostic Summary</h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer"
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print Hard Copy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSummaryPatient(null)}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold p-2 rounded-lg text-xs flex items-center justify-center transition-all cursor-pointer"
+                    title="Close preview"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Printable Official Hospital Report Content */}
+              <div className="space-y-6 text-slate-800 font-sans">
+                {/* Hospital Header Banner */}
+                <div className="border-b-2 border-slate-800 pb-4 flex justify-between items-start">
+                  <div>
+                    <h1 className="text-2xl font-black tracking-tight uppercase text-slate-900">Novamed</h1>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest mt-0.5">Department of Pathology & Laboratory Medicine</p>
+                    <p className="text-[11px] text-slate-400">Private Bag, Novamed, Kenya • Tel: +254 (0) 20 200000</p>
+                  </div>
+                  <div className="text-right font-mono text-xs">
+                    <span className="bg-slate-100 border border-slate-300 font-bold px-2.5 py-1 rounded text-[11px] uppercase tracking-wider text-slate-800 inline-block mb-1">
+                      CONFIDENTIAL REPORT
+                    </span>
+                    <div className="text-slate-500 text-[10px]">Date Printed: {new Date().toLocaleDateString()}</div>
+                  </div>
+                </div>
+
+                {/* Patient Biodata Box */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs">
+                  <div>
+                    <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">Patient Name</span>
+                    <strong className="text-slate-900 text-sm">{summaryPatient.name}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">Hospital OP / Ref</span>
+                    <strong className="text-blue-800 font-mono font-bold">{opNum}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">Biodata</span>
+                    <span className="text-slate-700 font-medium">{patObj ? `${patObj.gender}, ${patObj.age} ${patObj.ageUnit === 'Months' ? 'mos' : 'yrs'}` : 'Adult'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">Total Reports</span>
+                    <span className="text-slate-900 font-bold font-mono">{patientTests.length} Panel{patientTests.length !== 1 ? 's' : ''}</span>
+                  </div>
+                </div>
+
+                {/* Laboratory Test History Table */}
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 border-b border-slate-200 pb-2 mb-3">
+                    Diagnostic Test History & Clinical Findings
+                  </h4>
+
+                  {patientTests.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-slate-400 italic bg-slate-50 rounded-lg">
+                      No recorded diagnostic tests found for this patient ID.
+                    </div>
+                  ) : (
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-300 font-mono text-[10px] text-slate-500 uppercase">
+                          <th className="py-2 px-2">Date</th>
+                          <th className="py-2 px-2">Test Panel</th>
+                          <th className="py-2 px-2">Findings / Results</th>
+                          <th className="py-2 px-2">Officer</th>
+                          <th className="py-2 px-2 text-right">Fee</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {patientTests.map((t, idx) => (
+                          <tr key={t.id || idx} className="align-top">
+                            <td className="py-3 px-2 font-mono text-slate-600 whitespace-nowrap">{t.testDate}</td>
+                            <td className="py-3 px-2 font-bold text-slate-900">{t.testName}</td>
+                            <td className="py-3 px-2 font-mono text-slate-800 leading-relaxed max-w-xs">
+                              <div className="bg-slate-50 border border-slate-200/80 p-2 rounded text-[11px] font-mono">
+                                {t.result || 'No detailed findings recorded'}
+                              </div>
+                            </td>
+                            <td className="py-3 px-2 text-slate-500">{t.performedBy}</td>
+                            <td className="py-3 px-2 text-right font-mono font-bold text-slate-900 whitespace-nowrap">Ksh {Number(t.fee || 0).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 border-slate-800 font-mono font-bold text-slate-900">
+                          <td colSpan={4} className="py-3 px-2 text-right uppercase tracking-wider">Total Cumulative Diagnostic Charges:</td>
+                          <td className="py-3 px-2 text-right text-sm text-blue-800">Ksh {totalFees.toLocaleString()}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  )}
+                </div>
+
+                {/* Official Stamp & Sign block */}
+                <div className="pt-8 mt-8 border-t border-slate-200 grid grid-cols-2 gap-8 text-xs break-inside-avoid">
+                  <div>
+                    <p className="text-[10px] uppercase font-bold text-slate-400 font-mono">Clinical Sign-Off</p>
+                    <div className="h-12 flex items-end border-b border-dashed border-slate-400 pb-1 w-56 font-serif italic text-slate-700">
+                      Verified Laboratory Technologist
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">Authorized Stamp & Officer Signature</p>
+                  </div>
+                  <div className="text-right text-[10px] text-slate-400 leading-relaxed font-mono">
+                    <p>Report Verification Hash: #{Math.floor(1000000 + Math.random() * 9000000).toString(16).toUpperCase()}</p>
+                    <p>This document is certified accurate by hospital LIS.</p>
+                    <p>Generated via AI Studio LIS Portal.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}

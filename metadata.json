@@ -1,0 +1,8 @@
+{
+  "name": "Novamed",
+  "description": "Streamlined patient registration, role-based medical records, and AI board reporting portal for Novamed.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
