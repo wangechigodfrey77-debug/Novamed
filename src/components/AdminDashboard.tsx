@@ -23,6 +23,7 @@ interface AdminDashboardProps {
   expenses: Expense[];
   auditLogs?: AuditLog[];
   onAddWhitelist: (user: WhitelistUser) => void;
+  onCreateUser?: (email: string, password: string, name: string, role: UserRole) => Promise<void>;
   onRemoveWhitelist: (email: string) => void;
   onAddDuty: (duty: DutyAllocation) => void;
   onRemoveDuty: (dutyId: string) => void;
@@ -45,6 +46,7 @@ export function AdminDashboard({
   expenses = [],
   auditLogs = [],
   onAddWhitelist,
+  onCreateUser,
   onRemoveWhitelist,
   onAddDuty,
   onRemoveDuty,
@@ -121,6 +123,7 @@ export function AdminDashboard({
   const [wlEmail, setWlEmail] = useState<string>('');
   const [wlName, setWlName] = useState<string>('');
   const [wlRole, setWlRole] = useState<UserRole>('Doctor');
+  const [wlPassword, setWlPassword] = useState<string>('');
 
   // New Duty state
   const [dutyEmail, setDutyEmail] = useState<string>('');
@@ -406,24 +409,41 @@ export function AdminDashboard({
     doc.save(`NOVAMED_AUDIT_${filePrefix}_${cleanPeriodStr}.pdf`);
   };
 
-  const handleAddWhitelistSubmit = (e: React.FormEvent) => {
+  const handleAddWhitelistSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!wlEmail.trim() || !wlName.trim()) return;
+    if (!wlEmail.trim() || !wlName.trim() || !wlPassword.trim()) {
+      alert("Please enter Name, Email, and Password.");
+      return;
+    }
 
     if (whitelist.some((w) => w.email.toLowerCase() === wlEmail.toLowerCase())) {
       alert('Email already logged in the whitelist ledger.');
       return;
     }
 
-    onAddWhitelist({
-      email: wlEmail.trim().toLowerCase(),
-      name: wlName.trim(),
-      role: wlRole,
-    });
+    if (onCreateUser) {
+      try {
+        await onCreateUser(wlEmail.trim().toLowerCase(), wlPassword.trim(), wlName.trim(), wlRole);
+        setWlEmail('');
+        setWlName('');
+        setWlPassword('');
+        alert(`Account created and whitelisted successfully for: ${wlName}`);
+      } catch (err: any) {
+        alert("Failed to create user: " + err.message);
+      }
+    } else {
+      // Fallback
+      onAddWhitelist({
+        email: wlEmail.trim().toLowerCase(),
+        name: wlName.trim(),
+        role: wlRole,
+      });
 
-    setWlEmail('');
-    setWlName('');
-    alert(`Whitelisted secure login approved for: ${wlName}`);
+      setWlEmail('');
+      setWlName('');
+      setWlPassword('');
+      alert(`Whitelisted secure login approved for: ${wlName}`);
+    }
   };
 
   const handleAddDutySubmit = (e: React.FormEvent) => {
@@ -1573,7 +1593,7 @@ export function AdminDashboard({
 
             <form onSubmit={handleAddWhitelistSubmit} className="space-y-4 text-xs">
               <div>
-                <label id="lbl-wl-email" className="block font-medium text-slate-500 mb-1">Staff Google Email Address</label>
+                <label id="lbl-wl-email" className="block font-medium text-slate-500 mb-1">Account Email Address</label>
                 <input
                   id="inp-wl-email"
                   type="email"
@@ -1581,6 +1601,19 @@ export function AdminDashboard({
                   placeholder="e.g. nurse@novamed.com"
                   value={wlEmail}
                   onChange={(e) => setWlEmail(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded p-2 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label id="lbl-wl-password" className="block font-medium text-slate-500 mb-1">Temporary Password</label>
+                <input
+                  id="inp-wl-password"
+                  type="text"
+                  required
+                  placeholder="e.g. password123"
+                  value={wlPassword}
+                  onChange={(e) => setWlPassword(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded p-2 focus:ring-1 focus:ring-blue-500"
                 />
               </div>

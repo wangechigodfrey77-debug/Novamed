@@ -57,8 +57,8 @@ import {
   saveExpense,
   deleteExpense
 } from './dbService';
-import { auth, googleProvider, setOAuthAccessToken, getOAuthAccessToken } from './firebase';
-import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider } from 'firebase/auth';
+import { auth, secondaryAuth, googleProvider, setOAuthAccessToken, getOAuthAccessToken } from './firebase';
+import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { WhitelistUser, Patient, LabTest, LabCatalogItem, MedicationDispense, PharmacyItem, DutyAllocation, LeaveRequest, Message, Appointment, MedicalRecord, Expense, AuditLog, PatientVitals } from './types';
 
 
@@ -92,6 +92,8 @@ export default function App() {
   const [inputEmail, setInputEmail] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
   const [sessionEmail, setSessionEmail] = useState<string>('');
+  const [loginEmail, setLoginEmail] = useState<string>('');
+  const [loginPassword, setLoginPassword] = useState<string>('');
   const [firebaseUser, setFirebaseUser] = useState<any>(null);
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
   const [isWhitelistLoading, setIsWhitelistLoading] = useState<boolean>(true);
@@ -278,6 +280,43 @@ export default function App() {
       }
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  const handleEmailPasswordSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isLoggingIn || !loginEmail.trim() || !loginPassword.trim()) return;
+    setIsLoggingIn(true);
+    try {
+      setLoginError('');
+      const result = await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword.trim());
+      const email = result.user.email;
+      if (email) {
+        setSessionEmail(email);
+      }
+    } catch (err: any) {
+      console.error("Email/Password Sign-In Error:", err);
+      setLoginError(`Sign-In failed: ${err?.message || String(err)}`);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleCreateUser = async (email: string, password: string, name: string, role: UserRole) => {
+    try {
+      await createUserWithEmailAndPassword(secondaryAuth, email, password);
+      await saveWhitelistUser({ email, name, role });
+      await logMutation('CREATE_USER', `Admin generated new account access for: ${name}`);
+      await signOut(secondaryAuth);
+    } catch (err: any) {
+      if (err.code === 'auth/email-already-in-use') {
+        // Fallback if the user already exists in Firebase Auth, just whitelist them
+        await saveWhitelistUser({ email, name, role });
+        await logMutation('CREATE_USER', `Admin whitelisted existing account access for: ${name}`);
+        throw new Error("User account already exists. Added to whitelist.");
+      }
+      console.error("Error creating user:", err);
+      throw new Error(err.message || String(err));
     }
   };
 
@@ -628,6 +667,44 @@ export default function App() {
               </div>
             )}
 
+            <form onSubmit={handleEmailPasswordSignIn} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Email Address</label>
+                <input
+                  type="email"
+                  required
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder="name@novamed.com"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Password</label>
+                <input
+                  type="password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder="••••••••"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={isLoggingIn}
+                className="w-full bg-blue-600 text-white hover:bg-blue-700 py-2.5 rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50"
+              >
+                Sign In
+              </button>
+            </form>
+
+            <div className="relative flex py-2 items-center">
+              <div className="flex-grow border-t border-slate-200"></div>
+              <span className="shrink-0 mx-4 text-[10px] text-slate-400 font-medium uppercase tracking-wider">or secure SSO</span>
+              <div className="flex-grow border-t border-slate-200"></div>
+            </div>
+
             {/* Primary Google Auth Pop-up Button */}
             <button
               id="google-sso-popup-btn"
@@ -914,6 +991,7 @@ export default function App() {
                 expenses={expenses}
                 auditLogs={auditLogs}
                 onAddWhitelist={handleAddWhitelist}
+                onCreateUser={handleCreateUser}
                 onRemoveWhitelist={handleRemoveWhitelist}
                 onAddDuty={handleAddDuty}
                 onRemoveDuty={handleRemoveDuty}

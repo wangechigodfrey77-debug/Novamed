@@ -7,6 +7,10 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId); /* CRITICAL: The app will break without this line */
 export const auth = getAuth();
 
+// Secondary app instance to avoid signing out the current admin when creating new accounts
+const secondaryApp = initializeApp(firebaseConfig, "SecondaryApp");
+export const secondaryAuth = getAuth(secondaryApp);
+
 // Enforce browser session-level state persistence to prevent auth leakage
 setPersistence(auth, browserSessionPersistence).catch((err) => {
   console.warn("Could not enforce session persistence: ", err);

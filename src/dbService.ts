@@ -577,7 +577,9 @@ export function listenWhitelist(onUpdate: (data: WhitelistUser[]) => void, onErr
   const colRef = collection(db, 'whitelist');
   return onSnapshot(
     colRef,
+    { includeMetadataChanges: true },
     (snapshot) => {
+      if (snapshot.metadata.fromCache && snapshot.empty) return;
       const list: WhitelistUser[] = [];
       snapshot.forEach((doc) => {
         list.push(doc.data() as WhitelistUser);
