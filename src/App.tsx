@@ -58,7 +58,7 @@ import {
   deleteExpense
 } from './dbService';
 import { auth, secondaryAuth, googleProvider, setOAuthAccessToken, getOAuthAccessToken } from './firebase';
-import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { WhitelistUser, Patient, LabTest, LabCatalogItem, MedicationDispense, PharmacyItem, DutyAllocation, LeaveRequest, Message, Appointment, MedicalRecord, Expense, AuditLog, PatientVitals } from './types';
 
 
@@ -317,6 +317,17 @@ export default function App() {
       }
       console.error("Error creating user:", err);
       throw new Error(err.message || String(err));
+    }
+  };
+
+  const handleResetPassword = async (email: string) => {
+    try {
+      await sendPasswordResetEmail(auth, email);
+      await logMutation('RESET_PASSWORD', `Admin sent password reset email for: ${email}`);
+      alert(`Password reset email sent to ${email}`);
+    } catch (err: any) {
+      console.error("Error sending password reset email:", err);
+      alert(`Error sending reset email: ${err.message || String(err)}`);
     }
   };
 
@@ -992,6 +1003,7 @@ export default function App() {
                 auditLogs={auditLogs}
                 onAddWhitelist={handleAddWhitelist}
                 onCreateUser={handleCreateUser}
+                onResetPassword={handleResetPassword}
                 onRemoveWhitelist={handleRemoveWhitelist}
                 onAddDuty={handleAddDuty}
                 onRemoveDuty={handleRemoveDuty}

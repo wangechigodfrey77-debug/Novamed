@@ -24,6 +24,7 @@ interface AdminDashboardProps {
   auditLogs?: AuditLog[];
   onAddWhitelist: (user: WhitelistUser) => void;
   onCreateUser?: (email: string, password: string, name: string, role: UserRole) => Promise<void>;
+  onResetPassword?: (email: string) => Promise<void>;
   onRemoveWhitelist: (email: string) => void;
   onAddDuty: (duty: DutyAllocation) => void;
   onRemoveDuty: (dutyId: string) => void;
@@ -47,6 +48,7 @@ export function AdminDashboard({
   auditLogs = [],
   onAddWhitelist,
   onCreateUser,
+  onResetPassword,
   onRemoveWhitelist,
   onAddDuty,
   onRemoveDuty,
@@ -1688,16 +1690,26 @@ export function AdminDashboard({
                         {item.email === 'gmaurice101@gmail.com' ? (
                           <span className="text-[10px] text-slate-400 font-mono italic">Primary Creator</span>
                         ) : (
-                          <button
-                            id={`btn-remove-wl-${item.email}`}
-                            onClick={() => {
-                              onRemoveWhitelist(item.email);
-                              alert('Whitelisted email revoked.');
-                            }}
-                            className="text-slate-500 hover:text-rose-600 p-1"
-                          >
-                            Revoke
-                          </button>
+                          <div className="flex justify-end gap-2">
+                            {onResetPassword && (
+                              <button
+                                onClick={() => onResetPassword(item.email)}
+                                className="text-slate-500 hover:text-blue-600 p-1"
+                              >
+                                Reset Pwd
+                              </button>
+                            )}
+                            <button
+                              id={`btn-remove-wl-${item.email}`}
+                              onClick={() => {
+                                onRemoveWhitelist(item.email);
+                                alert('Whitelisted email revoked.');
+                              }}
+                              className="text-slate-500 hover:text-rose-600 p-1"
+                            >
+                              Revoke
+                            </button>
+                          </div>
                         )}
                       </td>
                     </tr>

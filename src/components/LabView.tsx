@@ -96,6 +96,7 @@ export function LabView({
   const [testResult, setTestResult] = useState<string>('');
   const [technicianName, setTechnicianName] = useState<string>(userName || 'Peter Kagiri');
   const [labTestDate, setLabTestDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [editingTestId, setEditingTestId] = useState<string | null>(null);
   const [summaryPatient, setSummaryPatient] = useState<{ id: string; name: string } | null>(null);
 
   // Walk-in Registration states
@@ -172,16 +173,8 @@ export function LabView({
     item.name.toLowerCase().includes(manageSearchQuery.toLowerCase())
   );
 
-  const pendingDoctorOrders = patients.flatMap(p => 
-    p.medicalHistory.flatMap(m => 
-      (m.labTestsRequested || []).map(l => ({
-        ...l,
-        patientId: p.id,
-        patientName: p.name,
-        recordId: m.id
-      }))
-    )
-  ).filter(order => !labTests.some(t => t.recordId === order.recordId && t.testName === order.testName));
+  const pendingLabTests = labTests.filter(t => t.result.includes('Pending Analysis') || t.performedBy.includes('Pending Lab Officer'));
+  const completedLabTests = labTests.filter(t => !t.result.includes('Pending Analysis') && !t.performedBy.includes('Pending Lab Officer'));
 
   // Sync test fee when default first option changes or option selected
   React.useEffect(() => {
@@ -200,6 +193,15 @@ export function LabView({
   const todaysTests = labTests.filter((t) => t.testDate === todayString);
   const todaysRevenue = todaysTests.reduce((sum, t) => sum + Number(t.fee || 0), 0);
 
+  const handleSelectPending = (test: LabTest) => {
+    setSelectedPatientId(test.patientId);
+    setTestType(test.testName);
+    setTestFee(test.fee);
+    setTestResult(''); // ready to type
+    setLabTestDate(new Date().toISOString().split('T')[0]);
+    setEditingTestId(test.id);
+  };
+
   const handleAddTest = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPatientId) {
@@ -216,7 +218,7 @@ export function LabView({
     }
 
     const testItem: LabTest = {
-      id: `LB-${Math.floor(100000 + Math.random() * 900000)}`,
+      id: editingTestId || `LB-${Math.floor(100000 + Math.random() * 900000)}`,
       testName: finalTestName,
       patientName: patient.name,
       patientId: patient.id,
@@ -227,12 +229,18 @@ export function LabView({
       fee: testFee
     };
 
-    onAddLabTest(testItem);
+    if (editingTestId && onUpdateLabTest) {
+      onUpdateLabTest(testItem);
+      alert(`Diagnostics lab report updated successfully for ${patient.name}.`);
+    } else {
+      onAddLabTest(testItem);
+      alert(`Diagnostics lab report committed successfully for ${patient.name}.`);
+    }
 
     // Reset fields
+    setEditingTestId(null);
     setTestResult('');
     setCustomTestName('');
-    alert(`Diagnostics lab report committed successfully for ${patient.name}.`);
   };
 
   const handleTestTypeChange = (val: string) => {
@@ -725,7 +733,7 @@ export function LabView({
                     : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
-                Clinical Diagnostics Ledger ({labTests.length})
+                Clinical Diagnostics Ledger ({completedLabTests.length})
               </button>
               <button
                 id="subtab-lab-orders"
@@ -737,7 +745,7 @@ export function LabView({
                     : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
-                Pending Doctor Orders ({pendingDoctorOrders.length})
+                Pending Doctor Orders ({pendingLabTests.length})
               </button>
               <button
                 id="subtab-lab-catalog"
@@ -811,7 +819,7 @@ export function LabView({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {labTests.map((t) => {
+                    {completedLabTests.map((t) => {
                       const patient = patients.find((p) => p.id === t.patientId);
                       const op = patient?.opNumber || (patient ? `OP-${(patient.registeredAt ? patient.registeredAt.substring(0, 7) : '2026-06')}-${patient.id.split('-')[1]}` : '');
                       return (
@@ -849,7 +857,7 @@ export function LabView({
                         </React.Fragment>
                       );
                     })}
-                    {labTests.length === 0 && (
+                    {completedLabTests.length === 0 && (
                       <tr>
                         <td colSpan={7} className="py-8 text-center text-slate-400 font-medium">No laboratory panel reports recorded yet. Use the record form on the left.</td>
                       </tr>
@@ -867,19 +875,29 @@ export function LabView({
                       <th className="py-2.5">Patient Name</th>
                       <th className="py-2.5">Diagnostic Panel</th>
                       <th className="py-2.5">Lab Fee</th>
+                      <th className="py-2.5 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {pendingDoctorOrders.map((order, index) => (
+                    {pendingLabTests.map((order, index) => (
                       <tr key={index} className="hover:bg-slate-50/40 transition-colors">
                         <td className="py-3.5 font-semibold text-slate-800">{order.patientName}</td>
                         <td className="py-3.5 text-slate-600 font-semibold">{order.testName}</td>
                         <td className="py-3.5 font-bold text-slate-900 font-mono">Ksh {order.fee.toLocaleString()}</td>
+                        <td className="py-3.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectPending(order)}
+                            className="py-1 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-[10px] font-bold transition-all shadow-xs"
+                          >
+                            Post Results
+                          </button>
+                        </td>
                       </tr>
                     ))}
-                    {pendingDoctorOrders.length === 0 && (
+                    {pendingLabTests.length === 0 && (
                       <tr>
-                        <td colSpan={3} className="py-8 text-center text-slate-400 font-medium">No pending lab orders from doctors.</td>
+                        <td colSpan={4} className="py-8 text-center text-slate-400 font-medium">No pending lab orders from doctors.</td>
                       </tr>
                     )}
                   </tbody>
