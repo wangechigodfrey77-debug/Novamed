@@ -193,13 +193,32 @@ export function LabView({
   const todaysTests = labTests.filter((t) => t.testDate === todayString);
   const todaysRevenue = todaysTests.reduce((sum, t) => sum + Number(t.fee || 0), 0);
 
+  const [postingResultForId, setPostingResultForId] = useState<string | null>(null);
+  const [postingResultText, setPostingResultText] = useState<string>('');
+
   const handleSelectPending = (test: LabTest) => {
-    setSelectedPatientId(test.patientId);
-    setTestType(test.testName);
-    setTestFee(test.fee);
-    setTestResult(''); // ready to type
-    setLabTestDate(new Date().toISOString().split('T')[0]);
-    setEditingTestId(test.id);
+    setPostingResultForId(test.id);
+    setPostingResultText('');
+  };
+
+  const handleSaveResultInline = (test: LabTest) => {
+    if (!postingResultText.trim()) {
+      alert("Please enter the lab diagnostic results.");
+      return;
+    }
+    const updatedTest: LabTest = {
+      ...test,
+      result: postingResultText,
+      performedBy: technicianName,
+      performedByEmail: userEmail || 'lab_tech@novamed.com',
+      testDate: labTestDate
+    };
+    if (onUpdateLabTest) {
+      onUpdateLabTest(updatedTest);
+      alert(`Diagnostics lab report updated successfully for ${test.patientName}.`);
+    }
+    setPostingResultForId(null);
+    setPostingResultText('');
   };
 
   const handleAddTest = (e: React.FormEvent) => {
@@ -880,20 +899,54 @@ export function LabView({
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
                     {pendingLabTests.map((order, index) => (
-                      <tr key={index} className="hover:bg-slate-50/40 transition-colors">
-                        <td className="py-3.5 font-semibold text-slate-800">{order.patientName}</td>
-                        <td className="py-3.5 text-slate-600 font-semibold">{order.testName}</td>
-                        <td className="py-3.5 font-bold text-slate-900 font-mono">Ksh {order.fee.toLocaleString()}</td>
-                        <td className="py-3.5 text-right">
-                          <button
-                            type="button"
-                            onClick={() => handleSelectPending(order)}
-                            className="py-1 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-[10px] font-bold transition-all shadow-xs"
-                          >
-                            Post Results
-                          </button>
-                        </td>
-                      </tr>
+                      <React.Fragment key={index}>
+                        <tr className="hover:bg-slate-50/40 transition-colors">
+                          <td className="py-3.5 font-semibold text-slate-800">{order.patientName}</td>
+                          <td className="py-3.5 text-slate-600 font-semibold">{order.testName}</td>
+                          <td className="py-3.5 font-bold text-slate-900 font-mono">Ksh {order.fee.toLocaleString()}</td>
+                          <td className="py-3.5 text-right">
+                            {postingResultForId === order.id ? (
+                              <button
+                                type="button"
+                                onClick={() => setPostingResultForId(null)}
+                                className="py-1 px-3 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-md text-[10px] font-bold transition-all shadow-xs"
+                              >
+                                Cancel
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleSelectPending(order)}
+                                className="py-1 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-[10px] font-bold transition-all shadow-xs"
+                              >
+                                Post Results
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                        {postingResultForId === order.id && (
+                          <tr className="bg-blue-50/30">
+                            <td colSpan={4} className="p-3 border-t border-blue-100">
+                              <textarea
+                                className="w-full text-xs p-2 border border-blue-200 rounded focus:ring-1 focus:ring-blue-500 outline-none"
+                                rows={3}
+                                placeholder={`Enter diagnostic findings for ${order.testName}...`}
+                                value={postingResultText}
+                                onChange={(e) => setPostingResultText(e.target.value)}
+                              />
+                              <div className="mt-2 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveResultInline(order)}
+                                  className="py-1.5 px-4 bg-green-600 hover:bg-green-700 text-white rounded-md text-xs font-bold transition-all shadow-xs"
+                                >
+                                  Save Results
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     ))}
                     {pendingLabTests.length === 0 && (
                       <tr>
